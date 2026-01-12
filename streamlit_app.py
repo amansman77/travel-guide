@@ -4,9 +4,34 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables import RunnableLambda
+
+from router.rules import route_user_input
+from router.llm_router import route_with_llm
+from router.types import RouteDecision, RouteResult
+from chains.full_chain import build_full_chain, run_full_chain, safe_json
+from chains.clarify import build_clarify_chain, run_clarify_chain
+from chains.itinerary_only import build_itinerary_only_chain, run_itinerary_only_chain
+from chains.candidates_only import build_candidates_only_chain, run_candidates_only_chain
+from observability.langsmith import trace_router_decision, generate_request_id
+try:
+    from langsmith import traceable
+except ImportError:
+    # Fallback if langsmith is not available
+    def traceable(name=None):
+        def decorator(func):
+            return func
+        return decorator
+
+# Router functions (not traceable individually, will be part of unified trace)
+def run_rule_router(input_text: str) -> RouteDecision:
+    """Rule-based router."""
+    return route_user_input(input_text)
+
+def run_llm_router(input_text: str, llm_instance: ChatOpenAI, parser_instance: JsonOutputParser) -> RouteDecision:
+    """LLM-based router."""
+    return route_with_llm(input_text, llm_instance, parser_instance)
 
 load_dotenv()
 
@@ -67,177 +92,11 @@ temperature = st.sidebar.slider("temperature", 0.0, 1.0, 0.4, 0.05)
 llm = ChatOpenAI(model=model_name, temperature=temperature)
 parser = JsonOutputParser()
 
-# ====== Prompts (고정 단계 / JSON 출력 고정) ======
-profile_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a travel analyst. Return ONLY valid JSON. No markdown."),
-    ("user", """
-User travel request:
-{user_input}
-
-Return JSON schema exactly:
-{{
-  "tags": ["..."],
-  "top_priorities": ["..."],
-  "constraints": {{
-    "season": "",
-    "budget": "",
-    "companions": "",
-    "pace": "slow|medium|fast",
-    "duration_days": 0,
-    "domestic_or_international": "domestic|international|either"
-  }},
-  "avoid": ["..."],
-  "notes_for_recommender": ""
-}}
-""")
-])
-
-candidates_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a travel curator. Return ONLY valid JSON. No markdown."),
-    ("user", """
-Traveler profile JSON:
-{profile}
-
-Generate 5 destination candidates that fit.
-
-Return JSON schema:
-{{
-  "candidates": [
-    {{
-      "name": "City, Country",
-      "why_fit": ["...","..."],
-      "watch_out": ["..."],
-      "best_length_days": 3
-    }}
-  ]
-}}
-""")
-])
-
-comparison_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a pragmatic travel evaluator. Return ONLY valid JSON. No markdown."),
-    ("user", """
-Traveler profile:
-{profile}
-
-Candidates:
-{candidates}
-
-Compare and score each (1-10):
-- fit
-- cost
-- walking_friendliness
-- quietness
-- cafe_scene
-
-Return JSON schema:
-{{
-  "table": [
-    {{
-      "name": "",
-      "scores": {{
-        "fit": 0,
-        "cost": 0,
-        "walking_friendliness": 0,
-        "quietness": 0,
-        "cafe_scene": 0
-      }},
-      "summary": ""
-    }}
-  ],
-  "top2": ["",""]
-}}
-""")
-])
-
-final_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a travel planner. Return ONLY valid JSON in Korean. No markdown."),
-    ("user", """
-Traveler profile:
-{profile}
-
-Comparison:
-{comparison}
-
-Pick the best destination and propose a 3-night 4-day plan.
-Be realistic and avoid exaggeration.
-
-Return JSON schema:
-{{
-  "winner": {{
-    "name": "",
-    "why": ["...","..."],
-    "best_area_to_stay": "",
-    "budget_tip": ""
-  }},
-  "itinerary": [
-    {{"day": 1, "morning":"", "afternoon":"", "evening":""}},
-    {{"day": 2, "morning":"", "afternoon":"", "evening":""}},
-    {{"day": 3, "morning":"", "afternoon":"", "evening":""}},
-    {{"day": 4, "morning":"", "afternoon":"", "evening":""}}
-  ]
-}}
-""")
-])
-
-# 개별 체인 정의
-profile_chain = profile_prompt | llm | parser
-candidates_chain = candidates_prompt | llm | parser
-comparison_chain = comparison_prompt | llm | parser
-final_chain = final_prompt | llm | parser
-
-# 통합 체인: 하나의 RunnableSequence로 연결하여 LangSmith에서 하나의 추적으로 보이도록 함
-def build_unified_chain():
-    """
-    전체 프롬프트 체인을 하나의 RunnableSequence로 구성합니다.
-    LangSmith에서는 하나의 runnable sequence로 추적됩니다.
-    """
-    def step1_profile(inputs):
-        """STEP 1: 여행자 프로필 분석"""
-        return {
-            "user_input": inputs["user_input"],
-            "profile": profile_chain.invoke({"user_input": inputs["user_input"]})
-        }
-    
-    def step2_candidates(inputs):
-        """STEP 2: 후보 도시 생성"""
-        return {
-            **inputs,
-            "candidates": candidates_chain.invoke({
-                "profile": safe_json(inputs["profile"])
-            })
-        }
-    
-    def step3_comparison(inputs):
-        """STEP 3: 비교 및 점수화"""
-        return {
-            **inputs,
-            "comparison": comparison_chain.invoke({
-                "profile": safe_json(inputs["profile"]),
-                "candidates": safe_json(inputs["candidates"])
-            })
-        }
-    
-    def step4_final(inputs):
-        """STEP 4: 최종 추천 및 일정"""
-        return {
-            **inputs,
-            "final": final_chain.invoke({
-                "profile": safe_json(inputs["profile"]),
-                "comparison": safe_json(inputs["comparison"])
-            })
-        }
-    
-    # 하나의 통합 체인으로 연결
-    return (
-        RunnableLambda(step1_profile)
-        | RunnableLambda(step2_candidates)
-        | RunnableLambda(step3_comparison)
-        | RunnableLambda(step4_final)
-    )
-
-# 통합 체인 인스턴스 생성
-unified_chain = build_unified_chain()
+# Chains 초기화
+full_chain = build_full_chain(llm, parser)
+clarify_chain = build_clarify_chain(llm, parser)
+itinerary_only_chain = build_itinerary_only_chain(llm, parser)
+candidates_only_chain = build_candidates_only_chain(llm, parser)
 
 # ====== UI ======
 left, right = st.columns([1, 1])
@@ -252,48 +111,167 @@ with left:
 with right:
     st.subheader("2) 체이닝 결과")
 
-def safe_json(obj) -> str:
-    return json.dumps(obj, ensure_ascii=False, indent=2)
+def execute_route(route_decision: RouteDecision, user_input: str) -> RouteResult:
+    """
+    Execute chain based on route decision.
+    """
+    route = route_decision.route
+    
+    if route == "full":
+        # Full 4-step chain
+        result_data = run_full_chain(full_chain, user_input)
+        return RouteResult(
+            route=route,
+            router_reason=route_decision.reason,
+            data=result_data
+        )
+    elif route == "clarify":
+        # Clarify chain
+        result_data = run_clarify_chain(clarify_chain, user_input, route_decision.missing_fields)
+        return RouteResult(
+            route=route,
+            router_reason=route_decision.reason,
+            data=result_data
+        )
+    elif route == "candidates_only":
+        # Candidates only chain
+        result_data = run_candidates_only_chain(candidates_only_chain, user_input)
+        return RouteResult(
+            route=route,
+            router_reason=route_decision.reason,
+            data=result_data
+        )
+    elif route == "itinerary_only":
+        # Itinerary only chain
+        result_data = run_itinerary_only_chain(itinerary_only_chain, user_input)
+        return RouteResult(
+            route=route,
+            router_reason=route_decision.reason,
+            data=result_data
+        )
+    else:
+        # Fallback to full
+        result_data = run_full_chain(full_chain, user_input)
+        return RouteResult(
+            route="full",
+            router_reason="알 수 없는 라우트, full로 fallback",
+            data=result_data
+        )
 
-def run_chain(user_input: str):
+
+@traceable(
+    name="travel_guide_router_chain",
+    run_type="chain"
+)
+def run_router_and_chain(user_input: str, llm_instance: ChatOpenAI, parser_instance: JsonOutputParser) -> RouteResult:
     """
-    통합 체인을 실행하여 하나의 runnable sequence로 LangSmith에 추적됩니다.
-    LangSmith 대시보드에서는 하나의 통합된 추적으로 보이며, 내부 단계들이 중첩되어 표시됩니다.
+    Unified router and chain execution as a single traceable sequence.
+    This creates one unified trace in LangSmith showing: Router → Selected Chain
+    
+    All steps (routing, decision, chain execution) are executed within this single trace,
+    creating a cohesive view in LangSmith.
     """
-    # 통합 체인 실행: 하나의 추적으로 LangSmith에 기록됨
-    result = unified_chain.invoke({"user_input": user_input})
+    # Step 1: Rule-based routing
+    route_decision = run_rule_router(user_input)
     
-    # 결과 추출
-    profile = result["profile"]
-    candidates = result["candidates"]
-    comparison = result["comparison"]
-    final = result["final"]
+    # Step 2: LLM router fallback if confidence is low
+    if route_decision.confidence < 0.7:
+        route_decision = run_llm_router(user_input, llm_instance, parser_instance)
     
-    return profile, candidates, comparison, final
+    # Step 3: Generate router decision metadata
+    router_metadata = trace_router_decision(route_decision, user_input)
+    
+    # Step 4: Execute route (chain execution happens here)
+    route_result = execute_route(route_decision, user_input)
+    
+    # Add metadata to the trace
+    return route_result
 
 if run:
     if not user_input.strip():
         st.warning("여행 조건을 입력해줘.")
         st.stop()
 
-    with st.spinner("체이닝 실행 중..."):
+    with st.spinner("라우팅 및 체이닝 실행 중..."):
         try:
-            profile, candidates, comparison, final = run_chain(user_input)
+            # Unified router and chain execution as single traceable sequence
+            route_result = run_router_and_chain(user_input, llm, parser)
+            
         except Exception as e:
-            st.error("체이닝 실행 중 오류가 났어. (JSON 파싱/모델 응답 형식 문제일 가능성이 큼)")
+            st.error("실행 중 오류가 났어. (JSON 파싱/모델 응답 형식 문제일 가능성이 큼)")
             st.exception(e)
             st.stop()
 
-    st.success("완료!")
+    # Display route info
+    route_badge_color = {
+        "full": "🟢",
+        "clarify": "🟡",
+        "candidates_only": "🔵",
+        "itinerary_only": "🟣"
+    }
+    route_labels = {
+        "full": "전체 추천",
+        "clarify": "조건 확인",
+        "candidates_only": "후보만",
+        "itinerary_only": "일정만"
+    }
+    st.markdown(f"**선택된 라우트:** {route_badge_color.get(route_result.route, '⚪')} `{route_labels.get(route_result.route, route_result.route)}` | **이유:** {route_result.router_reason}")
 
-    with st.expander("STEP 1) 여행자 프로필", expanded=True):
-        st.code(safe_json(profile), language="json")
-
-    with st.expander("STEP 2) 후보 5곳", expanded=False):
-        st.code(safe_json(candidates), language="json")
-
-    with st.expander("STEP 3) 비교표", expanded=False):
-        st.code(safe_json(comparison), language="json")
-
-    with st.expander("STEP 4) 최종 추천 + 3박4일 일정", expanded=True):
-        st.code(safe_json(final), language="json")
+    # Route별 결과 렌더링
+    if route_result.route == "full":
+        st.success("완료!")
+        data = route_result.data
+        with st.expander("STEP 1) 여행자 프로필", expanded=True):
+            st.code(safe_json(data["profile"]), language="json")
+        with st.expander("STEP 2) 후보 5곳", expanded=False):
+            st.code(safe_json(data["candidates"]), language="json")
+        with st.expander("STEP 3) 비교표", expanded=False):
+            st.code(safe_json(data["comparison"]), language="json")
+        with st.expander("STEP 4) 최종 추천 + 3박4일 일정", expanded=True):
+            st.code(safe_json(data["final"]), language="json")
+    
+    elif route_result.route == "clarify":
+        st.info("추가 정보가 필요합니다.")
+        data = route_result.data
+        if data.get("context"):
+            st.write(f"**{data['context']}**")
+        if data.get("questions"):
+            st.write("**다음 질문에 답해주세요:**")
+            for i, question in enumerate(data["questions"], 1):
+                st.write(f"{i}. {question}")
+    
+    elif route_result.route == "candidates_only":
+        st.success("후보 도시 추천 완료!")
+        data = route_result.data
+        with st.expander("여행자 프로필", expanded=False):
+            st.code(safe_json(data["profile"]), language="json")
+        with st.expander("추천 후보 5곳", expanded=True):
+            st.code(safe_json(data["candidates"]), language="json")
+    
+    elif route_result.route == "itinerary_only":
+        st.success("일정 생성 완료!")
+        data = route_result.data
+        st.write(f"**목적지:** {data.get('destination', 'N/A')}")
+        if data.get("best_area_to_stay"):
+            st.write(f"**추천 숙박 지역:** {data['best_area_to_stay']}")
+        if data.get("budget_tip"):
+            st.write(f"**예산 팁:** {data['budget_tip']}")
+        
+        with st.expander("상세 일정", expanded=True):
+            for day_info in data.get("itinerary", []):
+                day = day_info.get("day", 0)
+                st.write(f"**Day {day}**")
+                if day_info.get("morning"):
+                    st.write(f"  🌅 오전: {day_info['morning']}")
+                if day_info.get("afternoon"):
+                    st.write(f"  ☀️ 오후: {day_info['afternoon']}")
+                if day_info.get("evening"):
+                    st.write(f"  🌙 저녁: {day_info['evening']}")
+        
+        if data.get("tips"):
+            with st.expander("여행 팁", expanded=False):
+                for tip in data["tips"]:
+                    st.write(f"- {tip}")
+    
+    else:
+        st.info(route_result.data.get("message", "기능 구현 중입니다."))
