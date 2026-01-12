@@ -10,6 +10,38 @@ from langchain_core.runnables import RunnableLambda
 
 load_dotenv()
 
+# ====== LangSmith 설정 (LLM 초기화 전에 먼저 설정) ======
+def get_config(config_key: str, default: str = None) -> str:
+    """환경변수 또는 Streamlit secrets에서 설정값을 가져옵니다."""
+    config_value = os.getenv(config_key)
+    if not config_value:
+        try:
+            config_value = st.secrets.get(config_key, default)
+        except (FileNotFoundError, AttributeError, KeyError):
+            config_value = default
+    return config_value
+
+# LangSmith 설정 로드 (LLM 초기화 전에 먼저 설정해야 함)
+langsmith_tracing = get_config("LANGSMITH_TRACING")
+if langsmith_tracing and str(langsmith_tracing).lower() in ("true", "1", "yes"):
+    # LangSmith 환경변수 설정 (LangChain이 인식하는 모든 변수명 설정)
+    langsmith_api_key = get_config("LANGSMITH_API_KEY")
+    langsmith_endpoint = get_config("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+    langsmith_project = get_config("LANGSMITH_PROJECT", "travel-guide")
+    
+    if langsmith_api_key:
+        # 최신 LangChain은 LANGSMITH_* 사용
+        os.environ["LANGSMITH_TRACING"] = "true"
+        os.environ["LANGSMITH_API_KEY"] = langsmith_api_key
+        os.environ["LANGSMITH_ENDPOINT"] = langsmith_endpoint
+        os.environ["LANGSMITH_PROJECT"] = langsmith_project
+        
+        # 하위 호환성을 위한 LANGCHAIN_* 변수도 설정
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = langsmith_api_key
+        os.environ["LANGCHAIN_ENDPOINT"] = langsmith_endpoint
+        os.environ["LANGCHAIN_PROJECT"] = langsmith_project
+
 st.set_page_config(page_title="Travel Guide MVP", layout="wide")
 st.title("✈️ Travel Guide MVP (Prompt Chaining)")
 
@@ -28,33 +60,6 @@ if not OPENAI_API_KEY:
     # st.stop()
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-
-# ====== LangSmith 설정 ======
-def get_config(config_key: str, default: str = None) -> str:
-    """환경변수 또는 Streamlit secrets에서 설정값을 가져옵니다."""
-    config_value = os.getenv(config_key)
-    if not config_value:
-        try:
-            config_value = st.secrets.get(config_key, default)
-        except (FileNotFoundError, AttributeError, KeyError):
-            config_value = default
-    return config_value
-
-# LangSmith 설정 로드
-langsmith_tracing = get_config("LANGSMITH_TRACING")
-if langsmith_tracing:
-    os.environ["LANGSMITH_TRACING"] = str(langsmith_tracing)
-    
-    # LangSmith 환경변수 설정
-    langsmith_config = {
-        "LANGSMITH_API_KEY": get_config("LANGSMITH_API_KEY"),
-        "LANGSMITH_ENDPOINT": get_config("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
-        "LANGSMITH_PROJECT": get_config("LANGSMITH_PROJECT", "travel-guide"),
-    }
-    
-    for env_key, env_value in langsmith_config.items():
-        if env_value:
-            os.environ[env_key] = env_value
 
 model_name = st.sidebar.selectbox("LLM 모델", ["gpt-4o-mini", "gpt-4.1-mini"], index=0)
 temperature = st.sidebar.slider("temperature", 0.0, 1.0, 0.4, 0.05)

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Google Cloud Run 배포 스크립트 (Docker Hub 사용)
-# 사용법: ./deploy.sh [PROJECT_ID] [REGION] [DOCKERHUB_USERNAME] [OPENAI_API_KEY]
+# 사용법: ./deploy.sh [PROJECT_ID] [REGION] [DOCKERHUB_USERNAME] [OPENAI_API_KEY] [LANGSMITH_API_KEY]
 
 set -e
 
@@ -10,6 +10,7 @@ PROJECT_ID=${1:-"YOUR_PROJECT_ID"}
 REGION=${2:-"asia-northeast3"}
 DOCKERHUB_USERNAME=${3:-""}
 OPENAI_API_KEY=${4:-""}
+LANGSMITH_API_KEY=${5:-""}
 
 # 색상 출력
 RED='\033[0;31m'
@@ -41,13 +42,10 @@ gcloud config set project $PROJECT_ID
 echo -e "${YELLOW}🔧 Cloud Run API 활성화 중...${NC}"
 gcloud services enable run.googleapis.com --quiet
 
-# Docker Hub 인증 확인
+# Docker Hub 인증 확인 (Cloud Build 사용 시 로컬 Docker 불필요)
 echo -e "${YELLOW}🔐 Docker Hub 인증 확인 중...${NC}"
-if ! docker info | grep -q "Username"; then
-    echo -e "${YELLOW}⚠️  Docker Hub에 로그인이 필요합니다.${NC}"
-    echo "Docker Hub 로그인: docker login"
-    docker login
-fi
+# Cloud Build를 사용하므로 로컬 Docker daemon은 필요 없음
+# Docker Hub Personal Access Token은 환경변수 DOCKERHUB_TOKEN으로 전달됨
 
 # Docker 이미지 빌드 및 푸시
 IMAGE_NAME="travel-guide-mvp"
@@ -116,7 +114,10 @@ gcloud builds submit --config=$CLOUDBUILD_FILE .
 # 임시 파일 정리
 rm -f $CLOUDBUILD_FILE
 
-# Secret Manager 사용 여부 확인
+# Secret Manager 사용 여부 확인 및 환경변수 설정
+ENV_VARS=""
+SECRET_FLAGS=""
+
 if [ -z "$OPENAI_API_KEY" ]; then
     echo -e "${YELLOW}⚠️  OPENAI_API_KEY가 제공되지 않았습니다.${NC}"
     echo -e "${YELLOW}Secret Manager를 사용하거나 환경변수로 직접 설정하세요.${NC}"
@@ -124,7 +125,7 @@ if [ -z "$OPENAI_API_KEY" ]; then
     # Secret Manager 확인
     if gcloud secrets describe openai-api-key &>/dev/null; then
         echo -e "${GREEN}✅ Secret Manager의 openai-api-key 사용${NC}"
-        SECRET_FLAG="--set-secrets OPENAI_API_KEY=openai-api-key:latest"
+        SECRET_FLAGS="--set-secrets OPENAI_API_KEY=openai-api-key:latest"
     else
         echo -e "${RED}❌ Secret Manager에 openai-api-key가 없습니다.${NC}"
         echo "Secret 생성: echo -n 'YOUR_KEY' | gcloud secrets create openai-api-key --data-file=-"
@@ -132,7 +133,28 @@ if [ -z "$OPENAI_API_KEY" ]; then
     fi
 else
     echo -e "${YELLOW}⚠️  환경변수로 직접 설정합니다 (보안상 권장하지 않음)${NC}"
-    SECRET_FLAG="--set-env-vars OPENAI_API_KEY=$OPENAI_API_KEY"
+    ENV_VARS="OPENAI_API_KEY=$OPENAI_API_KEY"
+fi
+
+# LangSmith 환경변수 추가 (선택적)
+if [ -n "$LANGSMITH_API_KEY" ]; then
+    echo -e "${GREEN}✅ LangSmith 환경변수 추가${NC}"
+    if [ -n "$ENV_VARS" ]; then
+        ENV_VARS="$ENV_VARS,LANGSMITH_TRACING=true,LANGSMITH_ENDPOINT=https://api.smith.langchain.com,LANGSMITH_API_KEY=$LANGSMITH_API_KEY,LANGSMITH_PROJECT=travel-guide"
+    else
+        ENV_VARS="LANGSMITH_TRACING=true,LANGSMITH_ENDPOINT=https://api.smith.langchain.com,LANGSMITH_API_KEY=$LANGSMITH_API_KEY,LANGSMITH_PROJECT=travel-guide"
+    fi
+fi
+
+# 환경변수 플래그 설정
+if [ -n "$ENV_VARS" ]; then
+    if [ -n "$SECRET_FLAGS" ]; then
+        SECRET_FLAG="$SECRET_FLAGS --set-env-vars $ENV_VARS"
+    else
+        SECRET_FLAG="--set-env-vars $ENV_VARS"
+    fi
+else
+    SECRET_FLAG="$SECRET_FLAGS"
 fi
 
 # Cloud Run 배포
