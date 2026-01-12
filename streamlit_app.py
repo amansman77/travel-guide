@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.runnables import RunnableLambda
 
 load_dotenv()
 
@@ -28,11 +29,32 @@ if not OPENAI_API_KEY:
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
-# LangSmith (optional)
-# 환경변수로만 켜두는 걸 추천:
-# LANGCHAIN_TRACING_V2=true
-# LANGCHAIN_API_KEY=...
-# LANGCHAIN_PROJECT=travel-guide-mvp
+# ====== LangSmith 설정 ======
+def get_config(config_key: str, default: str = None) -> str:
+    """환경변수 또는 Streamlit secrets에서 설정값을 가져옵니다."""
+    config_value = os.getenv(config_key)
+    if not config_value:
+        try:
+            config_value = st.secrets.get(config_key, default)
+        except (FileNotFoundError, AttributeError, KeyError):
+            config_value = default
+    return config_value
+
+# LangSmith 설정 로드
+langsmith_tracing = get_config("LANGSMITH_TRACING")
+if langsmith_tracing:
+    os.environ["LANGSMITH_TRACING"] = str(langsmith_tracing)
+    
+    # LangSmith 환경변수 설정
+    langsmith_config = {
+        "LANGSMITH_API_KEY": get_config("LANGSMITH_API_KEY"),
+        "LANGSMITH_ENDPOINT": get_config("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+        "LANGSMITH_PROJECT": get_config("LANGSMITH_PROJECT", "travel-guide"),
+    }
+    
+    for env_key, env_value in langsmith_config.items():
+        if env_value:
+            os.environ[env_key] = env_value
 
 model_name = st.sidebar.selectbox("LLM 모델", ["gpt-4o-mini", "gpt-4.1-mini"], index=0)
 temperature = st.sidebar.slider("temperature", 0.0, 1.0, 0.4, 0.05)
@@ -153,10 +175,64 @@ Return JSON schema:
 """)
 ])
 
+# 개별 체인 정의
 profile_chain = profile_prompt | llm | parser
 candidates_chain = candidates_prompt | llm | parser
 comparison_chain = comparison_prompt | llm | parser
 final_chain = final_prompt | llm | parser
+
+# 통합 체인: 하나의 RunnableSequence로 연결하여 LangSmith에서 하나의 추적으로 보이도록 함
+def build_unified_chain():
+    """
+    전체 프롬프트 체인을 하나의 RunnableSequence로 구성합니다.
+    LangSmith에서는 하나의 runnable sequence로 추적됩니다.
+    """
+    def step1_profile(inputs):
+        """STEP 1: 여행자 프로필 분석"""
+        return {
+            "user_input": inputs["user_input"],
+            "profile": profile_chain.invoke({"user_input": inputs["user_input"]})
+        }
+    
+    def step2_candidates(inputs):
+        """STEP 2: 후보 도시 생성"""
+        return {
+            **inputs,
+            "candidates": candidates_chain.invoke({
+                "profile": safe_json(inputs["profile"])
+            })
+        }
+    
+    def step3_comparison(inputs):
+        """STEP 3: 비교 및 점수화"""
+        return {
+            **inputs,
+            "comparison": comparison_chain.invoke({
+                "profile": safe_json(inputs["profile"]),
+                "candidates": safe_json(inputs["candidates"])
+            })
+        }
+    
+    def step4_final(inputs):
+        """STEP 4: 최종 추천 및 일정"""
+        return {
+            **inputs,
+            "final": final_chain.invoke({
+                "profile": safe_json(inputs["profile"]),
+                "comparison": safe_json(inputs["comparison"])
+            })
+        }
+    
+    # 하나의 통합 체인으로 연결
+    return (
+        RunnableLambda(step1_profile)
+        | RunnableLambda(step2_candidates)
+        | RunnableLambda(step3_comparison)
+        | RunnableLambda(step4_final)
+    )
+
+# 통합 체인 인스턴스 생성
+unified_chain = build_unified_chain()
 
 # ====== UI ======
 left, right = st.columns([1, 1])
@@ -175,16 +251,19 @@ def safe_json(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 def run_chain(user_input: str):
-    profile = profile_chain.invoke({"user_input": user_input})
-    candidates = candidates_chain.invoke({"profile": safe_json(profile)})
-    comparison = comparison_chain.invoke({
-        "profile": safe_json(profile),
-        "candidates": safe_json(candidates)
-    })
-    final = final_chain.invoke({
-        "profile": safe_json(profile),
-        "comparison": safe_json(comparison)
-    })
+    """
+    통합 체인을 실행하여 하나의 runnable sequence로 LangSmith에 추적됩니다.
+    LangSmith 대시보드에서는 하나의 통합된 추적으로 보이며, 내부 단계들이 중첩되어 표시됩니다.
+    """
+    # 통합 체인 실행: 하나의 추적으로 LangSmith에 기록됨
+    result = unified_chain.invoke({"user_input": user_input})
+    
+    # 결과 추출
+    profile = result["profile"]
+    candidates = result["candidates"]
+    comparison = result["comparison"]
+    final = result["final"]
+    
     return profile, candidates, comparison, final
 
 if run:

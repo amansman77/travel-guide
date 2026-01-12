@@ -117,15 +117,39 @@ http://localhost:8501
 * JSON Schema 변경 → 체이닝 안정성 체감
 * Step 하나 제거/추가 → UX 변화 확인
 
-## 🔍 Observability (Optional: LangSmith)
+## 🔍 Observability (LangSmith)
 
-프롬프트/체인 실행 로그를 보고 싶다면 환경변수를 추가하세요.
+프롬프트/체인 실행 로그를 LangSmith에서 추적하고 모니터링할 수 있습니다.
+
+### 로컬 개발
+
+`.streamlit/secrets.toml` 파일에 다음을 추가하세요:
+
+```toml
+LANGSMITH_TRACING="true"
+LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+LANGSMITH_API_KEY="YOUR_LANGSMITH_API_KEY"
+LANGSMITH_PROJECT="travel-guide"
+```
+
+또는 환경변수로 설정:
 
 ```bash
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY="YOUR_LANGSMITH_KEY"
-export LANGCHAIN_PROJECT="travel-guide-mvp"
+export LANGSMITH_TRACING=true
+export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+export LANGSMITH_API_KEY="YOUR_LANGSMITH_API_KEY"
+export LANGSMITH_PROJECT="travel-guide"
 ```
+
+### LangSmith 대시보드
+
+설정 후 앱을 실행하면 LangSmith 대시보드에서 다음을 확인할 수 있습니다:
+- 각 프롬프트 체인 단계별 실행 시간
+- LLM 호출 비용 및 토큰 사용량
+- 체인 실행 추적 및 디버깅 정보
+- 에러 및 예외 로그
+
+LangSmith 대시보드: https://smith.langchain.com
 
 ## 🐳 Deployment (GCP Cloud Run)
 
