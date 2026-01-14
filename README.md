@@ -25,6 +25,46 @@
 
 ## 🧠 AI Agent Router + Prompt Chaining Structure
 
+### 전체 아키텍처 시각화
+
+```mermaid
+flowchart TD
+    Start([사용자 입력]) --> Router[AI Agent Router]
+    
+    Router --> RuleRouter[Rule Router<br/>키워드 기반]
+    RuleRouter -->|명확한 경우<br/>confidence ≥ 0.7| RouteDecision[Route 결정]
+    RuleRouter -->|애매한 경우<br/>confidence < 0.7| LLMRouter["LLM Router<br/>의도 분석<br/>📋 [Spec](docs/prompts/llm-router.md)"]
+    LLMRouter --> RouteDecision
+    
+    RouteDecision -->|full| FullChain[Full Chain<br/>4-step]
+    RouteDecision -->|clarify| ClarifyChain[Clarify Chain<br/>질문 생성]
+    RouteDecision -->|candidates_only| CandidatesChain[Candidates Only<br/>Profile + Candidates]
+    RouteDecision -->|itinerary_only| ItineraryChain[Itinerary Only<br/>일정 생성]
+    
+    FullChain --> Step1["STEP 1: Traveler Profile<br/>📋 [Spec](docs/prompts/step1-profile.md)"]
+    Step1 --> Step2["STEP 2: Destination Candidates<br/>📋 [Spec](docs/prompts/step2-candidates.md)"]
+    Step2 --> Step3["STEP 3: Comparison & Scoring<br/>📋 [Spec](docs/prompts/step3-comparison.md)"]
+    Step3 --> Step4["STEP 4: Final Recommendation<br/>📋 [Spec](docs/prompts/step4-final.md)"]
+    Step4 --> Result1[결과 출력]
+    
+    ClarifyChain --> Result2["질문 리스트 출력<br/>📋 [Spec](docs/prompts/clarify.md)"]
+    CandidatesChain --> Result3["Profile + Candidates 출력<br/>📋 [Spec](docs/prompts/candidates-only.md)"]
+    ItineraryChain --> Result4["일정 출력<br/>📋 [Spec](docs/prompts/itinerary-only.md)"]
+    
+    Result1 --> End([완료])
+    Result2 --> End
+    Result3 --> End
+    Result4 --> End
+    
+    style Router fill:#e1f5ff
+    style RuleRouter fill:#fff4e1
+    style LLMRouter fill:#ffe1f5
+    style FullChain fill:#e1ffe1
+    style ClarifyChain fill:#fff4e1
+    style CandidatesChain fill:#e1e1ff
+    style ItineraryChain fill:#ffe1ff
+```
+
 ### Router (의도 분기)
 
 사용자 입력을 분석하여 적절한 실행 경로를 선택합니다:
@@ -39,16 +79,55 @@
 3. **`candidates_only`**: 후보 도시만 반환 (Profile + Candidates)
 4. **`itinerary_only`**: 특정 목적지 기반 일정만 생성
 
-### Full Chain (4단계)
+### Full Chain 상세 구조 (4단계)
 
 `full` 라우트 선택 시 아래 **고정된 4단계 체인**으로 수행됩니다:
 
+```mermaid
+sequenceDiagram
+    participant User as 사용자 입력
+    participant Step1 as STEP 1: Traveler Profile
+    participant Step2 as STEP 2: Destination Candidates
+    participant Step3 as STEP 3: Comparison & Scoring
+    participant Step4 as STEP 4: Final Recommendation
+    
+    User->>Step1: 자연어 입력
+    Note over Step1: [프롬프트 명세](docs/prompts/step1-profile.md)
+    Step1->>Step1: JSON 파싱
+    Step1->>Step2: Profile JSON 전달
+    Note over Step2: [프롬프트 명세](docs/prompts/step2-candidates.md)
+    Step2->>Step2: 5개 후보 생성
+    Step2->>Step3: Profile + Candidates JSON 전달
+    Note over Step3: [프롬프트 명세](docs/prompts/step3-comparison.md)
+    Step3->>Step3: 비교 및 점수화
+    Step3->>Step4: Profile + Comparison JSON 전달
+    Note over Step4: [프롬프트 명세](docs/prompts/step4-final.md)
+    Step4->>Step4: 최종 추천 + 일정 생성
+    Step4->>User: 최종 결과 반환
 ```
-STEP 1. Traveler Profile
-→ STEP 2. Destination Candidates (5)
-→ STEP 3. Comparison & Scoring
-→ STEP 4. Final Recommendation + Itinerary
-```
+
+**단계별 상세 및 프롬프트 명세**:
+
+| Step | 설명 | 프롬프트 명세 |
+|------|------|--------------|
+| **STEP 1** | Traveler Profile | [📋 상세 명세](docs/prompts/step1-profile.md) |
+| **STEP 2** | Destination Candidates (5) | [📋 상세 명세](docs/prompts/step2-candidates.md) |
+| **STEP 3** | Comparison & Scoring | [📋 상세 명세](docs/prompts/step3-comparison.md) |
+| **STEP 4** | Final Recommendation + Itinerary | [📋 상세 명세](docs/prompts/step4-final.md) |
+
+**Router 프롬프트 명세**:
+
+| Router | 설명 | 프롬프트 명세 |
+|--------|------|--------------|
+| **LLM Router** | 의도 분석 및 라우트 결정 | [📋 상세 명세](docs/prompts/llm-router.md) |
+
+**기타 체인 프롬프트 명세**:
+
+| Chain | 설명 | 프롬프트 명세 |
+|-------|------|--------------|
+| **Candidates Only** | Profile + Candidates만 실행 | [📋 상세 명세](docs/prompts/candidates-only.md) |
+| **Clarify** | 조건 확인 질문 생성 | [📋 상세 명세](docs/prompts/clarify.md) |
+| **Itinerary Only** | 일정만 생성 | [📋 상세 명세](docs/prompts/itinerary-only.md) |
 
 ### 핵심 설계 원칙
 - **Router가 사용자 의도에 따라 실행 경로 선택**
