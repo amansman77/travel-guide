@@ -236,10 +236,23 @@ if run:
         # Check if v2 data structure (has validators_results and aggregation)
         is_v2 = "validators_results" in data and "aggregation" in data
         
+        # Check if web-grounded (has citations in validator results)
+        has_citations = False
+        if is_v2:
+            validators_results = data.get("validators_results", [])
+            for result in validators_results:
+                if result.get("citations"):
+                    has_citations = True
+                    break
+        
         # Display version info
         if is_v2:
-            st.success("✅ 완료! (Travel Concierge v2 - Validators 실행됨)")
-            st.info(f"🔍 검증 완료: {len(data.get('validators_results', []))}개 검증 결과, Aggregation 완료")
+            if has_citations:
+                st.success("✅ 완료! (Travel Concierge v2 Web-Grounded - 검색 기반 검증)")
+                st.info(f"🔍 검증 완료: {len(data.get('validators_results', []))}개 검증 결과 (웹 검색 기반), Aggregation 완료")
+            else:
+                st.success("✅ 완료! (Travel Concierge v2 - Validators 실행됨)")
+                st.info(f"🔍 검증 완료: {len(data.get('validators_results', []))}개 검증 결과, Aggregation 완료")
         else:
             st.warning("⚠️ v1 구조로 실행됨 (validators_results 또는 aggregation 없음)")
             st.success("완료!")
@@ -286,8 +299,43 @@ if run:
                         df = pd.DataFrame(summary_data)
                         st.dataframe(df, use_container_width=True)
                 
-                # Detailed results
+                # Detailed results with citations
                 st.write("**상세 검증 결과**")
+                
+                # Group by validator and show citations
+                by_validator = {}
+                for result in validators_results:
+                    validator_name = result.get("validator", "unknown")
+                    if validator_name not in by_validator:
+                        by_validator[validator_name] = []
+                    by_validator[validator_name].append(result)
+                
+                # Display validator results with citations
+                for validator_name, results in by_validator.items():
+                    st.markdown(f"#### {validator_name} 검증 결과")
+                    for result in results:
+                        candidate_id = result.get("candidate_id", "unknown")
+                        score = result.get("score", 0.0)
+                        verdict = result.get("verdict", "fail")
+                        
+                        st.write(f"**{candidate_id}**: 점수 {score:.2f} ({verdict})")
+                        if result.get("reasons"):
+                            st.write("**이유:**")
+                            for reason in result.get("reasons", [])[:2]:
+                                st.write(f"  • {reason}")
+                        
+                        # Show citations if available
+                        citations = result.get("citations", [])
+                        if citations:
+                            st.write("**출처 (Citations):**")
+                            for i, cite in enumerate(citations[:3], 1):
+                                st.write(f"{i}. [{cite.get('title', 'No title')}]({cite.get('url', '#')})")
+                                if cite.get("snippet"):
+                                    st.caption(cite.get("snippet", "")[:150] + "...")
+                    st.divider()
+                
+                # Full JSON
+                st.write("**전체 Validators JSON**")
                 st.code(safe_json(validators_results), language="json")
             
             # STEP 4: Aggregation
@@ -335,6 +383,18 @@ if run:
                         for confirm in final_choice.get("what_to_confirm", []):
                             st.write(f"❓ {confirm}")
                 
+                # Evidence summary (citations)
+                evidence_summary = aggregation.get("evidence_summary", [])
+                if evidence_summary:
+                    st.write("**검증 근거 출처 (Evidence Summary)**")
+                    for evidence in evidence_summary:
+                        axis = evidence.get("axis", "unknown")
+                        sources = evidence.get("sources", [])
+                        if sources:
+                            st.write(f"**{axis}**:")
+                            for source in sources[:3]:
+                                st.write(f"  • [{source}]({source})")
+                
                 # Disclaimer
                 if aggregation.get("disclaimer"):
                     st.info(aggregation.get("disclaimer"))
@@ -380,6 +440,19 @@ if run:
                         st.write("**주의사항:**")
                         for watchout in validation_summary.get("watchouts", [])[:3]:
                             st.write(f"🔔 {watchout}")
+                
+                # Show evidence summary from aggregation if available
+                aggregation = data.get("aggregation", {})
+                evidence_summary = aggregation.get("evidence_summary", [])
+                if evidence_summary:
+                    st.write("**검증 출처 (Citations)**")
+                    for evidence in evidence_summary:
+                        axis = evidence.get("axis", "unknown")
+                        sources = evidence.get("sources", [])
+                        if sources:
+                            st.write(f"**{axis}**:")
+                            for source in sources[:3]:
+                                st.write(f"  • [{source}]({source})")
                 
                 # Itinerary
                 itinerary = final.get("itinerary", [])

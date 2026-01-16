@@ -52,7 +52,8 @@ For final_choice, include:
 - what_to_confirm: Questions or confirmations needed before finalizing
 
 IMPORTANT:
-- All validator results are based on general knowledge, NOT real-time data
+- All validator results are based on general knowledge or web search results, NOT real-time data
+- If validators include citations, preserve them in evidence_summary
 - Include this disclaimer in the output
 
 Return JSON schema exactly:
@@ -74,6 +75,12 @@ Return JSON schema exactly:
     "why": ["..."],
     "what_to_confirm": ["..."]
   }},
+  "evidence_summary": [
+    {{
+      "axis": "seasonality_weather",
+      "sources": ["url1", "url2"]
+    }}
+  ],
   "disclaimer": "실시간 데이터가 아님을 명시"
 }}
 """)
@@ -105,6 +112,20 @@ def run_aggregator(
             result["ranked_candidates"] = []
         if "final_choice" not in result:
             result["final_choice"] = {}
+        if "evidence_summary" not in result:
+            # Extract citations from validators results
+            evidence_summary = []
+            for validator_result in validators_results:
+                validator_name = validator_result.get("validator", "")
+                citations = validator_result.get("citations", [])
+                if citations:
+                    sources = [cite.get("url", "") for cite in citations if cite.get("url")]
+                    if sources:
+                        evidence_summary.append({
+                            "axis": validator_name,
+                            "sources": sources[:3]  # Top 3 sources per validator
+                        })
+            result["evidence_summary"] = evidence_summary
         if "disclaimer" not in result:
             result["disclaimer"] = "실시간 데이터가 아님을 명시"
             

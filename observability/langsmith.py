@@ -1,4 +1,5 @@
 """LangSmith observability helpers for tagging and metadata."""
+import os
 import hashlib
 import uuid
 from typing import Dict, Any
@@ -40,7 +41,12 @@ def trace_router_decision(route_decision: RouteDecision, user_input: str) -> Dic
     
     # Add v2 flow tag if full route
     if route_decision.route == "full":
-        tags.append("flow:concierge_v2")
+        # Check if web-grounded validators are enabled
+        use_web_grounded = os.getenv("GOOGLE_CSE_API_KEY") and os.getenv("GOOGLE_CSE_CX_WEATHER")
+        if use_web_grounded:
+            tags.append("flow:concierge_v2_web")
+        else:
+            tags.append("flow:concierge_v2")
     
     # Return metadata for LangSmith
     return {

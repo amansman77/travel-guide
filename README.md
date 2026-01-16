@@ -27,10 +27,16 @@
      - `budget_fit`: 예산 적합성
      - `vibe_fit`: 취향 적합성
      - `transit_complexity`: 이동 난이도
-     - `safety_risk`: 치안/안전성
-     - `seasonality_weather`: 계절/날씨 적합성
+     - `safety_risk`: 치안/안전성 (Web-Grounded 지원)
+     - `seasonality_weather`: 계절/날씨 적합성 (Web-Grounded 지원)
    - **Aggregator**: 검증 결과를 종합하여 최종 추천 도출
    - **검증 근거 포함**: 최종 추천에 검증 근거 요약 포함
+5. **Web-Grounded Validators (NEW)**
+   - **Google CSE 기반 검색**: 신뢰 도메인에서 실제 정보 수집
+   - **지원 Validators**: `safety_risk`, `seasonality_weather`
+   - **Citations 포함**: 검색 출처를 결과에 포함
+   - **자동 Fallback**: CSE 미설정 시 LLM-only로 자동 전환
+   - 설정 가이드: [📋 Google CSE 설정 가이드](docs/GOOGLE_CSE_SETUP.md)
 
 ## 🧠 AI Agent Router + Prompt Chaining Structure
 
@@ -137,8 +143,8 @@ sequenceDiagram
 | **Budget Fit** | 예산 적합성 검증 | [📋 상세 명세](docs/prompts/validators/budget-fit.md) |
 | **Vibe Fit** | 취향 적합성 검증 | [📋 상세 명세](docs/prompts/validators/vibe-fit.md) |
 | **Transit Complexity** | 이동 난이도 검증 | [📋 상세 명세](docs/prompts/validators/transit-complexity.md) |
-| **Safety Risk** | 치안/안전성 검증 | [📋 상세 명세](docs/prompts/validators/safety-risk.md) |
-| **Seasonality & Weather** | 계절/날씨 적합성 검증 | [📋 상세 명세](docs/prompts/validators/seasonality-weather.md) |
+| **Safety Risk** | 치안/안전성 검증 (Web-Grounded 지원) | [📋 상세 명세](docs/prompts/validators/safety-risk.md) |
+| **Seasonality & Weather** | 계절/날씨 적합성 검증 (Web-Grounded 지원) | [📋 상세 명세](docs/prompts/validators/seasonality-weather.md) |
 
 **Router 프롬프트 명세**:
 
@@ -196,7 +202,12 @@ travel-guide-mvp/
 │     ├─ vibe_fit.py
 │     ├─ transit_complexity.py
 │     ├─ safety_risk.py
-│     └─ seasonality_weather.py
+│     ├─ safety_risk_web.py  # Web-grounded safety validator
+│     ├─ seasonality_weather.py
+│     └─ seasonality_weather_web.py  # Web-grounded weather validator
+├─ tools/               # External tools
+│  ├─ __init__.py
+│  └─ google_cse.py     # Google Custom Search Engine client
 ├─ observability/        # LangSmith integration
 │  ├─ __init__.py
 │  └─ langsmith.py      # Tracing helpers
@@ -208,6 +219,8 @@ travel-guide-mvp/
 
 ### 1. Environment Variable 설정
 
+#### 필수: OpenAI API Key
+
 ```bash
 export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
 ````
@@ -217,6 +230,22 @@ export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
 ```toml
 OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
 ```
+
+#### 선택: Google CSE (Web-Grounded 기능 사용 시)
+
+Web-Grounded Validator를 사용하려면 Google Custom Search Engine 설정이 필요합니다.
+
+**상세 설정 가이드**: [📋 Google CSE 설정 가이드](docs/GOOGLE_CSE_SETUP.md)
+
+간단 요약:
+```toml
+GOOGLE_CSE_API_KEY="your_api_key"
+GOOGLE_CSE_CX_WEATHER="your_weather_pse_id"
+GOOGLE_CSE_CX_SAFETY="your_safety_pse_id"  # 선택
+```
+
+> **참고**: Google CSE가 설정되지 않아도 앱은 정상 작동합니다.  
+> 이 경우 LLM-only validator로 자동 fallback됩니다.
 
 ### 2. Install & Run
 
@@ -341,6 +370,7 @@ Full Chain v2 내부:
 **LangSmith 태그:**
 - `route:full`, `route:clarify`, `route:candidates_only`, `route:itinerary_only`
 - `flow:concierge_v2` (Full route v2 실행 시)
+- `flow:concierge_v2_web` (Web-grounded validators 사용 시)
 - `validator:budget_fit`, `validator:vibe_fit` 등 (각 validator별)
 
 LangSmith 대시보드: https://smith.langchain.com
