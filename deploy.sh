@@ -29,6 +29,15 @@ if [ -f "$SECRETS_FILE" ]; then
     if [ -z "$LANGSMITH_API_KEY" ]; then
         LANGSMITH_API_KEY=$(grep "^LANGSMITH_API_KEY" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
     fi
+    if [ -z "$GOOGLE_CSE_API_KEY" ]; then
+        GOOGLE_CSE_API_KEY=$(grep "^GOOGLE_CSE_API_KEY" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+    if [ -z "$GOOGLE_CSE_CX_WEATHER" ]; then
+        GOOGLE_CSE_CX_WEATHER=$(grep "^GOOGLE_CSE_CX_WEATHER" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+    if [ -z "$GOOGLE_CSE_CX_SAFETY" ]; then
+        GOOGLE_CSE_CX_SAFETY=$(grep "^GOOGLE_CSE_CX_SAFETY" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
 fi
 
 # 명령줄 인자로 덮어쓰기 (우선순위: 명령줄 > secrets.toml > 기본값)
@@ -58,6 +67,9 @@ echo -e "   - REGION: ${REGION:-❌ 없음}"
 echo -e "   - DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME:-❌ 없음}"
 echo -e "   - OPENAI_API_KEY: ${OPENAI_API_KEY:+✅ 설정됨}${OPENAI_API_KEY:-❌ 없음}"
 echo -e "   - LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:+✅ 설정됨}${LANGSMITH_API_KEY:-❌ 없음}"
+echo -e "   - GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:+✅ 설정됨}${GOOGLE_CSE_API_KEY:-❌ 없음}"
+echo -e "   - GOOGLE_CSE_CX_WEATHER: ${GOOGLE_CSE_CX_WEATHER:+✅ 설정됨}${GOOGLE_CSE_CX_WEATHER:-❌ 없음}"
+echo -e "   - GOOGLE_CSE_CX_SAFETY: ${GOOGLE_CSE_CX_SAFETY:+✅ 설정됨}${GOOGLE_CSE_CX_SAFETY:-❌ 없음}"
 
 # 프로젝트 ID 확인
 if [ "$PROJECT_ID" == "YOUR_PROJECT_ID" ] || [ -z "$PROJECT_ID" ]; then
@@ -192,6 +204,24 @@ if [ -n "$LANGSMITH_API_KEY" ]; then
         ENV_VARS="$ENV_VARS,LANGSMITH_TRACING=true,LANGSMITH_ENDPOINT=https://api.smith.langchain.com,LANGSMITH_API_KEY=$LANGSMITH_API_KEY,LANGSMITH_PROJECT=travel-guide"
     else
         ENV_VARS="LANGSMITH_TRACING=true,LANGSMITH_ENDPOINT=https://api.smith.langchain.com,LANGSMITH_API_KEY=$LANGSMITH_API_KEY,LANGSMITH_PROJECT=travel-guide"
+    fi
+fi
+
+# Google CSE 환경변수 추가 (선택적)
+if [ -n "$GOOGLE_CSE_API_KEY" ]; then
+    echo -e "${GREEN}✅ Google CSE 환경변수 추가${NC}"
+    if [ -n "$ENV_VARS" ]; then
+        ENV_VARS="$ENV_VARS,GOOGLE_CSE_API_KEY=$GOOGLE_CSE_API_KEY"
+    else
+        ENV_VARS="GOOGLE_CSE_API_KEY=$GOOGLE_CSE_API_KEY"
+    fi
+    
+    if [ -n "$GOOGLE_CSE_CX_WEATHER" ]; then
+        ENV_VARS="$ENV_VARS,GOOGLE_CSE_CX_WEATHER=$GOOGLE_CSE_CX_WEATHER"
+    fi
+    
+    if [ -n "$GOOGLE_CSE_CX_SAFETY" ]; then
+        ENV_VARS="$ENV_VARS,GOOGLE_CSE_CX_SAFETY=$GOOGLE_CSE_CX_SAFETY"
     fi
 fi
 

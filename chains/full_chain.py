@@ -210,7 +210,7 @@ def run_full_chain(chain, user_input: str):
 def build_full_chain_v2(llm: ChatOpenAI, parser: JsonOutputParser):
     """
     Build the full 5-step v2 chain with validators and aggregator.
-    LangSmith will track this as a single runnable sequence.
+    Returns a unified RunnableSequence that will appear as a single sequence in LangSmith.
     """
     # Prompts (STEP 1, 2, 5 are same as v1)
     profile_prompt = ChatPromptTemplate.from_messages([
@@ -301,7 +301,7 @@ Return JSON schema:
     aggregator_chain = build_aggregator_chain(llm, parser)
     final_chain = final_prompt | llm | parser
 
-    # Step functions
+    # Step functions - wrapped with RunnableLambda for unified tracing
     def step1_profile(inputs):
         """STEP 1: 여행자 프로필 분석"""
         return {
@@ -356,23 +356,35 @@ Return JSON schema:
             })
         }
     
-    # Unified chain
-    return (
+    # Unified chain as a single RunnableSequence
+    # LangSmith will trace this as one continuous sequence when invoked
+    # Each step is a RunnableLambda that will appear as part of the sequence
+    unified_chain = (
         RunnableLambda(step1_profile)
         | RunnableLambda(step2_candidates)
         | RunnableLambda(step3_parallel_validators)
         | RunnableLambda(step4_aggregator)
         | RunnableLambda(step5_final)
     )
+    
+    return unified_chain
 
 
+@traceable(
+    name="full_chain_v2",
+    run_type="chain"
+)
 def run_full_chain_v2(chain, user_input: str):
     """
     Execute the full chain v2 and return results.
-    LangSmith tracing is handled by the chain itself.
+    
+    This function is wrapped with @traceable to ensure the entire chain
+    appears as a single RunnableSequence in LangSmith.
+    The chain itself is a RunnableSequence, and this wrapper ensures
+    it's traced as one unified sequence rather than separate steps.
     """
     # Chain invoke will be automatically traced by LangSmith
-    # if LANGSMITH_TRACING is enabled
+    # The @traceable decorator ensures this appears as one sequence
     result = chain.invoke({"user_input": user_input})
     
     return {
