@@ -32,6 +32,16 @@ def trace_router_decision(route_decision: RouteDecision, user_input: str) -> Dic
     request_id = generate_request_id()
     user_input_hash = hash_user_input(user_input)
     
+    # Add flow tag for v2
+    tags = [
+        f"route:{route_decision.route}",
+        f"router:{route_decision.router_type}",
+    ]
+    
+    # Add v2 flow tag if full route
+    if route_decision.route == "full":
+        tags.append("flow:concierge_v2")
+    
     # Return metadata for LangSmith
     return {
         "route": route_decision.route,
@@ -40,10 +50,7 @@ def trace_router_decision(route_decision: RouteDecision, user_input: str) -> Dic
         "confidence": route_decision.confidence,
         "request_id": request_id,
         "user_input_hash": user_input_hash,
-        "tags": [
-            f"route:{route_decision.route}",
-            f"router:{route_decision.router_type}",
-        ],
+        "tags": tags,
         "metadata": {
             "missing_fields": route_decision.missing_fields,
             "confidence": route_decision.confidence,

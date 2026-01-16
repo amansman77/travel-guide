@@ -22,6 +22,15 @@
    - 자연어 기반 입력 (예: 시기, 예산, 동행, 목적)
 3. **체이닝 기반 여행 추천 결과 출력**
    - 단계별 중간 결과를 그대로 노출 (디버깅/학습 목적)
+4. **Travel Concierge v2 (NEW)**
+   - **병렬 검증(Parallel Validators)**: 5개 validator가 후보 도시를 병렬로 검증
+     - `budget_fit`: 예산 적합성
+     - `vibe_fit`: 취향 적합성
+     - `transit_complexity`: 이동 난이도
+     - `safety_risk`: 치안/안전성
+     - `seasonality_weather`: 계절/날씨 적합성
+   - **Aggregator**: 검증 결과를 종합하여 최종 추천 도출
+   - **검증 근거 포함**: 최종 추천에 검증 근거 요약 포함
 
 ## 🧠 AI Agent Router + Prompt Chaining Structure
 
@@ -36,16 +45,17 @@ flowchart TD
     RuleRouter -->|애매한 경우<br/>confidence < 0.7| LLMRouter["LLM Router<br/>의도 분석<br/>📋 [Spec](docs/prompts/llm-router.md)"]
     LLMRouter --> RouteDecision
     
-    RouteDecision -->|full| FullChain[Full Chain<br/>4-step]
+    RouteDecision -->|full| FullChain[Full Chain v2<br/>5-step with Validators]
     RouteDecision -->|clarify| ClarifyChain[Clarify Chain<br/>질문 생성]
     RouteDecision -->|candidates_only| CandidatesChain[Candidates Only<br/>Profile + Candidates]
     RouteDecision -->|itinerary_only| ItineraryChain[Itinerary Only<br/>일정 생성]
     
     FullChain --> Step1["STEP 1: Traveler Profile<br/>📋 [Spec](docs/prompts/step1-profile.md)"]
     Step1 --> Step2["STEP 2: Destination Candidates<br/>📋 [Spec](docs/prompts/step2-candidates.md)"]
-    Step2 --> Step3["STEP 3: Comparison & Scoring<br/>📋 [Spec](docs/prompts/step3-comparison.md)"]
-    Step3 --> Step4["STEP 4: Final Recommendation<br/>📋 [Spec](docs/prompts/step4-final.md)"]
-    Step4 --> Result1[결과 출력]
+    Step2 --> Step3["STEP 3: Parallel Validators<br/>📋 [Spec](docs/prompts/validators/)"]
+    Step3 --> Step4["STEP 4: Aggregator<br/>📋 [Spec](docs/prompts/aggregator.md)"]
+    Step4 --> Step5["STEP 5: Final Recommendation<br/>📋 [Spec](docs/prompts/step4-final.md)"]
+    Step5 --> Result1[결과 출력]
     
     ClarifyChain --> Result2["질문 리스트 출력<br/>📋 [Spec](docs/prompts/clarify.md)"]
     CandidatesChain --> Result3["Profile + Candidates 출력<br/>📋 [Spec](docs/prompts/candidates-only.md)"]
@@ -74,22 +84,23 @@ flowchart TD
 
 ### 4가지 라우트
 
-1. **`full`**: 전체 4-step 체인 실행 (기본)
+1. **`full`**: 전체 5-step 체인 실행 (v2: Validators 포함)
 2. **`clarify`**: 조건 부족 시 질문 생성
 3. **`candidates_only`**: 후보 도시만 반환 (Profile + Candidates)
 4. **`itinerary_only`**: 특정 목적지 기반 일정만 생성
 
-### Full Chain 상세 구조 (4단계)
+### Full Chain v2 상세 구조 (5단계)
 
-`full` 라우트 선택 시 아래 **고정된 4단계 체인**으로 수행됩니다:
+`full` 라우트 선택 시 아래 **고정된 5단계 체인**으로 수행됩니다 (Travel Concierge v2):
 
 ```mermaid
 sequenceDiagram
     participant User as 사용자 입력
     participant Step1 as STEP 1: Traveler Profile
     participant Step2 as STEP 2: Destination Candidates
-    participant Step3 as STEP 3: Comparison & Scoring
-    participant Step4 as STEP 4: Final Recommendation
+    participant Step3 as STEP 3: Parallel Validators
+    participant Step4 as STEP 4: Aggregator
+    participant Step5 as STEP 5: Final Recommendation
     
     User->>Step1: 자연어 입력
     Note over Step1: [프롬프트 명세](docs/prompts/step1-profile.md)
@@ -98,12 +109,15 @@ sequenceDiagram
     Note over Step2: [프롬프트 명세](docs/prompts/step2-candidates.md)
     Step2->>Step2: 5개 후보 생성
     Step2->>Step3: Profile + Candidates JSON 전달
-    Note over Step3: [프롬프트 명세](docs/prompts/step3-comparison.md)
-    Step3->>Step3: 비교 및 점수화
-    Step3->>Step4: Profile + Comparison JSON 전달
-    Note over Step4: [프롬프트 명세](docs/prompts/step4-final.md)
-    Step4->>Step4: 최종 추천 + 일정 생성
-    Step4->>User: 최종 결과 반환
+    Note over Step3: [Validator Specs](docs/prompts/validators/)
+    Step3->>Step3: 5개 후보 × 5개 Validator<br/>병렬 검증 (25 runs)
+    Step3->>Step4: Validators Results 전달
+    Note over Step4: [프롬프트 명세](docs/prompts/aggregator.md)
+    Step4->>Step4: 검증 결과 종합<br/>Ranked Candidates 생성
+    Step4->>Step5: Aggregation JSON 전달
+    Note over Step5: [프롬프트 명세](docs/prompts/step4-final.md)
+    Step5->>Step5: 최종 추천 + 일정 생성<br/>검증 근거 요약 포함
+    Step5->>User: 최종 결과 반환
 ```
 
 **단계별 상세 및 프롬프트 명세**:
@@ -112,8 +126,19 @@ sequenceDiagram
 |------|------|--------------|
 | **STEP 1** | Traveler Profile | [📋 상세 명세](docs/prompts/step1-profile.md) |
 | **STEP 2** | Destination Candidates (5) | [📋 상세 명세](docs/prompts/step2-candidates.md) |
-| **STEP 3** | Comparison & Scoring | [📋 상세 명세](docs/prompts/step3-comparison.md) |
-| **STEP 4** | Final Recommendation + Itinerary | [📋 상세 명세](docs/prompts/step4-final.md) |
+| **STEP 3** | Parallel Validators (NEW) | [📋 Validator 명세](docs/prompts/validators/) |
+| **STEP 4** | Aggregator (NEW) | [📋 상세 명세](docs/prompts/aggregator.md) |
+| **STEP 5** | Final Recommendation + Itinerary | [📋 상세 명세](docs/prompts/step4-final.md) |
+
+**Validator 프롬프트 명세**:
+
+| Validator | 설명 | 프롬프트 명세 |
+|-----------|------|--------------|
+| **Budget Fit** | 예산 적합성 검증 | [📋 상세 명세](docs/prompts/validators/budget-fit.md) |
+| **Vibe Fit** | 취향 적합성 검증 | [📋 상세 명세](docs/prompts/validators/vibe-fit.md) |
+| **Transit Complexity** | 이동 난이도 검증 | [📋 상세 명세](docs/prompts/validators/transit-complexity.md) |
+| **Safety Risk** | 치안/안전성 검증 | [📋 상세 명세](docs/prompts/validators/safety-risk.md) |
+| **Seasonality & Weather** | 계절/날씨 적합성 검증 | [📋 상세 명세](docs/prompts/validators/seasonality-weather.md) |
 
 **Router 프롬프트 명세**:
 
@@ -159,10 +184,19 @@ travel-guide-mvp/
 │  └─ llm_router.py     # LLM-based router (fallback)
 ├─ chains/              # Execution chains
 │  ├─ __init__.py
-│  ├─ full_chain.py     # Full 4-step chain
+│  ├─ full_chain.py     # Full chain (v1: 4-step, v2: 5-step)
+│  ├─ parallel_validators.py # Parallel validators execution
+│  ├─ aggregator.py     # Aggregator for validator results
 │  ├─ clarify.py        # Clarify chain (questions)
 │  ├─ candidates_only.py # Candidates only chain
-│  └─ itinerary_only.py # Itinerary only chain
+│  ├─ itinerary_only.py # Itinerary only chain
+│  └─ validators/       # Validator chains
+│     ├─ __init__.py
+│     ├─ budget_fit.py
+│     ├─ vibe_fit.py
+│     ├─ transit_complexity.py
+│     ├─ safety_risk.py
+│     └─ seasonality_weather.py
 ├─ observability/        # LangSmith integration
 │  ├─ __init__.py
 │  └─ langsmith.py      # Tracing helpers
@@ -209,7 +243,7 @@ http://localhost:8501
 조용한 휴식 선호,
 해외 여행
 ```
-→ 전체 4-step 체인 실행
+→ 전체 5-step 체인 실행 (v2: Validators 포함)
 
 #### Clarify Route (조건 확인)
 ```
@@ -231,11 +265,12 @@ http://localhost:8501
 
 ### 출력 구성
 
-**Full Route 선택 시:**
+**Full Route 선택 시 (v2):**
 * STEP 1: 여행자 성향 요약(JSON)
 * STEP 2: 추천 후보 도시 5곳
-* STEP 3: 항목별 비교 점수
-* STEP 4: 최종 추천 + 3박 4일 일정
+* STEP 3: 병렬 검증 결과 (5개 Validator × 5개 후보 = 25개 검증)
+* STEP 4: 검증 결과 종합 (Ranked Candidates + Final Choice)
+* STEP 5: 최종 추천 + 3박 4일 일정 + 검증 근거 요약
 
 **다른 라우트 선택 시:**
 * 각 라우트에 맞는 최적화된 결과만 출력
@@ -290,11 +325,23 @@ export LANGSMITH_PROJECT="travel-guide"
 travel_guide_router_chain (통합 추적)
   ├─ Rule Router / LLM Router
   └─ Selected Chain
-      ├─ Full Chain (4-step) 또는
+      ├─ Full Chain v2 (5-step with Validators) 또는
       ├─ Clarify Chain 또는
       ├─ Candidates Only Chain 또는
       └─ Itinerary Only Chain
+
+Full Chain v2 내부:
+  ├─ STEP 1: Profile
+  ├─ STEP 2: Candidates
+  ├─ STEP 3: Parallel Validators (25 runs 병렬)
+  ├─ STEP 4: Aggregator
+  └─ STEP 5: Final Recommendation
 ```
+
+**LangSmith 태그:**
+- `route:full`, `route:clarify`, `route:candidates_only`, `route:itinerary_only`
+- `flow:concierge_v2` (Full route v2 실행 시)
+- `validator:budget_fit`, `validator:vibe_fit` 등 (각 validator별)
 
 LangSmith 대시보드: https://smith.langchain.com
 

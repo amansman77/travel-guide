@@ -1,6 +1,7 @@
 import os
 import json
 import streamlit as st
+import pandas as pd
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
@@ -10,7 +11,7 @@ from langchain_core.runnables import RunnableLambda
 from router.rules import route_user_input
 from router.llm_router import route_with_llm
 from router.types import RouteDecision, RouteResult
-from chains.full_chain import build_full_chain, run_full_chain, safe_json
+from chains.full_chain import build_full_chain, run_full_chain, build_full_chain_v2, run_full_chain_v2, safe_json
 from chains.clarify import build_clarify_chain, run_clarify_chain
 from chains.itinerary_only import build_itinerary_only_chain, run_itinerary_only_chain
 from chains.candidates_only import build_candidates_only_chain, run_candidates_only_chain
@@ -93,7 +94,8 @@ llm = ChatOpenAI(model=model_name, temperature=temperature)
 parser = JsonOutputParser()
 
 # Chains 초기화
-full_chain = build_full_chain(llm, parser)
+full_chain_v2 = build_full_chain_v2(llm, parser)  # Use v2 with validators
+full_chain = build_full_chain(llm, parser)  # Keep v1 for fallback
 clarify_chain = build_clarify_chain(llm, parser)
 itinerary_only_chain = build_itinerary_only_chain(llm, parser)
 candidates_only_chain = build_candidates_only_chain(llm, parser)
@@ -118,8 +120,18 @@ def execute_route(route_decision: RouteDecision, user_input: str) -> RouteResult
     route = route_decision.route
     
     if route == "full":
-        # Full 4-step chain
-        result_data = run_full_chain(full_chain, user_input)
+        # Full v2 chain (5-step with validators)
+        print(f"[DEBUG] Running Full Chain v2 with validators...")
+        result_data = run_full_chain_v2(full_chain_v2, user_input)
+        
+        # Debug: Check if v2 structure
+        is_v2 = "validators_results" in result_data and "aggregation" in result_data
+        print(f"[DEBUG] Full Chain v2 executed: {is_v2}")
+        if is_v2:
+            print(f"[DEBUG] - Validators results count: {len(result_data.get('validators_results', []))}")
+            print(f"[DEBUG] - Aggregation present: {bool(result_data.get('aggregation'))}")
+            print(f"[DEBUG] - Final recommendation present: {bool(result_data.get('final'))}")
+        
         return RouteResult(
             route=route,
             router_reason=route_decision.reason,
@@ -219,16 +231,179 @@ if run:
 
     # Route별 결과 렌더링
     if route_result.route == "full":
-        st.success("완료!")
         data = route_result.data
-        with st.expander("STEP 1) 여행자 프로필", expanded=True):
+        
+        # Check if v2 data structure (has validators_results and aggregation)
+        is_v2 = "validators_results" in data and "aggregation" in data
+        
+        # Display version info
+        if is_v2:
+            st.success("✅ 완료! (Travel Concierge v2 - Validators 실행됨)")
+            st.info(f"🔍 검증 완료: {len(data.get('validators_results', []))}개 검증 결과, Aggregation 완료")
+        else:
+            st.warning("⚠️ v1 구조로 실행됨 (validators_results 또는 aggregation 없음)")
+            st.success("완료!")
+        
+        with st.expander("STEP 1) 여행자 프로필", expanded=False):
             st.code(safe_json(data["profile"]), language="json")
+        
         with st.expander("STEP 2) 후보 5곳", expanded=False):
             st.code(safe_json(data["candidates"]), language="json")
-        with st.expander("STEP 3) 비교표", expanded=False):
-            st.code(safe_json(data["comparison"]), language="json")
-        with st.expander("STEP 4) 최종 추천 + 3박4일 일정", expanded=True):
-            st.code(safe_json(data["final"]), language="json")
+        
+        if is_v2:
+            # STEP 3: Validators Results
+            with st.expander("STEP 3) 검증 결과 (Parallel Validators)", expanded=False):
+                validators_results = data.get("validators_results", [])
+                
+                # Group by candidate
+                by_candidate = {}
+                for result in validators_results:
+                    candidate_id = result.get("candidate_id", "unknown")
+                    if candidate_id not in by_candidate:
+                        by_candidate[candidate_id] = []
+                    by_candidate[candidate_id].append(result)
+                
+                # Display validator summary table
+                if by_candidate:
+                    st.write("**후보별 검증 요약**")
+                    
+                    summary_data = []
+                    for candidate_id, results in by_candidate.items():
+                        candidate_name = next(
+                            (c.get("name", candidate_id) for c in data.get("candidates", []) 
+                             if f"C{data.get('candidates', []).index(c)+1}" == candidate_id),
+                            candidate_id
+                        )
+                        row = {"후보": candidate_name}
+                        for result in results:
+                            validator_name = result.get("validator", "unknown")
+                            score = result.get("score", 0.0)
+                            verdict = result.get("verdict", "fail")
+                            row[validator_name] = f"{score:.2f} ({verdict})"
+                        summary_data.append(row)
+                    
+                    if summary_data:
+                        df = pd.DataFrame(summary_data)
+                        st.dataframe(df, use_container_width=True)
+                
+                # Detailed results
+                st.write("**상세 검증 결과**")
+                st.code(safe_json(validators_results), language="json")
+            
+            # STEP 4: Aggregation
+            with st.expander("STEP 4) 검증 결과 종합 (Aggregator)", expanded=True):
+                aggregation = data.get("aggregation", {})
+                
+                # Display ranked candidates
+                ranked = aggregation.get("ranked_candidates", [])
+                if ranked:
+                    st.write("**순위별 후보**")
+                    for i, candidate in enumerate(ranked[:3], 1):  # Top 3
+                        with st.container():
+                            st.markdown(f"### {i}. {candidate.get('name', 'Unknown')} (점수: {candidate.get('total_score', 0):.2f})")
+                            st.write(f"**요약:** {candidate.get('summary', '')}")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if candidate.get("strengths"):
+                                    st.write("**강점:**")
+                                    for strength in candidate.get("strengths", [])[:3]:
+                                        st.write(f"✅ {strength}")
+                            with col2:
+                                if candidate.get("risks"):
+                                    st.write("**리스크:**")
+                                    for risk in candidate.get("risks", [])[:3]:
+                                        st.write(f"⚠️ {risk}")
+                            
+                            if candidate.get("watchouts"):
+                                st.write("**주의사항:**")
+                                for watchout in candidate.get("watchouts", [])[:2]:
+                                    st.write(f"🔔 {watchout}")
+                            st.divider()
+                
+                # Final choice
+                final_choice = aggregation.get("final_choice", {})
+                if final_choice:
+                    st.write("**최종 선택**")
+                    st.markdown(f"### 🏆 {final_choice.get('name', 'Unknown')}")
+                    if final_choice.get("why"):
+                        st.write("**선택 이유:**")
+                        for reason in final_choice.get("why", []):
+                            st.write(f"• {reason}")
+                    if final_choice.get("what_to_confirm"):
+                        st.write("**확인 필요 사항:**")
+                        for confirm in final_choice.get("what_to_confirm", []):
+                            st.write(f"❓ {confirm}")
+                
+                # Disclaimer
+                if aggregation.get("disclaimer"):
+                    st.info(aggregation.get("disclaimer"))
+                
+                # Full JSON (expander 중첩 방지를 위해 일반 코드 블록 사용)
+                st.write("**전체 Aggregation JSON:**")
+                st.code(safe_json(aggregation), language="json")
+            
+            # STEP 5: Final Recommendation
+            with st.expander("STEP 5) 최종 추천 + 3박4일 일정", expanded=True):
+                final = data.get("final", {})
+                
+                # Winner
+                winner = final.get("winner", {})
+                if winner:
+                    st.markdown(f"### 🎯 추천 여행지: {winner.get('name', 'Unknown')}")
+                    if winner.get("why"):
+                        st.write("**추천 이유:**")
+                        for reason in winner.get("why", []):
+                            st.write(f"• {reason}")
+                    if winner.get("best_area_to_stay"):
+                        st.write(f"**추천 숙박 지역:** {winner.get('best_area_to_stay')}")
+                    if winner.get("budget_tip"):
+                        st.write(f"**예산 팁:** {winner.get('budget_tip')}")
+                
+                # Validation summary
+                validation_summary = final.get("validation_summary", {})
+                if validation_summary:
+                    st.write("**검증 근거 요약**")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if validation_summary.get("key_strengths"):
+                            st.write("**핵심 강점:**")
+                            for strength in validation_summary.get("key_strengths", [])[:3]:
+                                st.write(f"✅ {strength}")
+                    with col2:
+                        if validation_summary.get("key_risks"):
+                            st.write("**핵심 리스크:**")
+                            for risk in validation_summary.get("key_risks", [])[:3]:
+                                st.write(f"⚠️ {risk}")
+                    
+                    if validation_summary.get("watchouts"):
+                        st.write("**주의사항:**")
+                        for watchout in validation_summary.get("watchouts", [])[:3]:
+                            st.write(f"🔔 {watchout}")
+                
+                # Itinerary
+                itinerary = final.get("itinerary", [])
+                if itinerary:
+                    st.write("**3박 4일 일정**")
+                    for day_info in itinerary:
+                        day = day_info.get("day", 0)
+                        st.write(f"**Day {day}**")
+                        if day_info.get("morning"):
+                            st.write(f"  🌅 오전: {day_info['morning']}")
+                        if day_info.get("afternoon"):
+                            st.write(f"  ☀️ 오후: {day_info['afternoon']}")
+                        if day_info.get("evening"):
+                            st.write(f"  🌙 저녁: {day_info['evening']}")
+                
+                # Full JSON (expander 중첩 방지를 위해 일반 코드 블록 사용)
+                st.write("**전체 Final JSON:**")
+                st.code(safe_json(final), language="json")
+        else:
+            # Fallback to v1 display
+            with st.expander("STEP 3) 비교표", expanded=False):
+                st.code(safe_json(data.get("comparison", {})), language="json")
+            with st.expander("STEP 4) 최종 추천 + 3박4일 일정", expanded=True):
+                st.code(safe_json(data.get("final", {})), language="json")
     
     elif route_result.route == "clarify":
         st.info("추가 정보가 필요합니다.")
