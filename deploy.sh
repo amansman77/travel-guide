@@ -2,15 +2,41 @@
 
 # Google Cloud Run 배포 스크립트 (Docker Hub 사용)
 # 사용법: ./deploy.sh [PROJECT_ID] [REGION] [DOCKERHUB_USERNAME] [OPENAI_API_KEY] [LANGSMITH_API_KEY]
+# 또는 secrets.toml에서 자동으로 읽어옵니다.
 
 set -e
 
-# 기본값 설정
-PROJECT_ID=${1:-"YOUR_PROJECT_ID"}
-REGION=${2:-"asia-northeast3"}
-DOCKERHUB_USERNAME=${3:-""}
-OPENAI_API_KEY=${4:-""}
-LANGSMITH_API_KEY=${5:-""}
+# secrets.toml에서 설정 읽기 (있는 경우)
+SECRETS_FILE=".streamlit/secrets.toml"
+if [ -f "$SECRETS_FILE" ]; then
+    echo "📋 secrets.toml에서 설정 읽는 중..."
+    # TOML 파싱 (간단한 방식)
+    if [ -z "$PROJECT_ID" ]; then
+        PROJECT_ID=$(grep "^PROJECT_ID" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+    if [ -z "$REGION" ]; then
+        REGION=$(grep "^REGION" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+    if [ -z "$DOCKERHUB_USERNAME" ]; then
+        DOCKERHUB_USERNAME=$(grep "^DOCKERHUB_USERNAME" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+    if [ -z "$DOCKERHUB_TOKEN" ]; then
+        DOCKERHUB_TOKEN=$(grep "^DOCKERHUB_PERSONAL_ACCESS_TOKEN" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+    if [ -z "$OPENAI_API_KEY" ]; then
+        OPENAI_API_KEY=$(grep "^OPENAI_API_KEY" "$SECRETS_FILE" | grep -v "^#" | awk -F'"' '{print $2}' | head -1 || echo "")
+    fi
+    if [ -z "$LANGSMITH_API_KEY" ]; then
+        LANGSMITH_API_KEY=$(grep "^LANGSMITH_API_KEY" "$SECRETS_FILE" | awk -F'"' '{print $2}' || echo "")
+    fi
+fi
+
+# 명령줄 인자로 덮어쓰기 (우선순위: 명령줄 > secrets.toml > 기본값)
+PROJECT_ID=${1:-${PROJECT_ID:-"YOUR_PROJECT_ID"}}
+REGION=${2:-${REGION:-"asia-northeast3"}}
+DOCKERHUB_USERNAME=${3:-${DOCKERHUB_USERNAME:-""}}
+OPENAI_API_KEY=${4:-${OPENAI_API_KEY:-""}}
+LANGSMITH_API_KEY=${5:-${LANGSMITH_API_KEY:-""}}
 
 # 색상 출력
 RED='\033[0;31m'
@@ -20,10 +46,24 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}🚀 Travel Guide MVP 배포 시작 (Docker Hub 사용)${NC}"
 
+# 설정 확인 및 출력
+echo -e "${YELLOW}📋 배포 설정 확인:${NC}"
+if [ -f "$SECRETS_FILE" ]; then
+    echo -e "   - secrets.toml: ✅ 발견됨"
+else
+    echo -e "   - secrets.toml: ⚠️  없음 (명령줄 인자 사용)"
+fi
+echo -e "   - PROJECT_ID: ${PROJECT_ID:-❌ 없음}"
+echo -e "   - REGION: ${REGION:-❌ 없음}"
+echo -e "   - DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME:-❌ 없음}"
+echo -e "   - OPENAI_API_KEY: ${OPENAI_API_KEY:+✅ 설정됨}${OPENAI_API_KEY:-❌ 없음}"
+echo -e "   - LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:+✅ 설정됨}${LANGSMITH_API_KEY:-❌ 없음}"
+
 # 프로젝트 ID 확인
-if [ "$PROJECT_ID" == "YOUR_PROJECT_ID" ]; then
+if [ "$PROJECT_ID" == "YOUR_PROJECT_ID" ] || [ -z "$PROJECT_ID" ]; then
     echo -e "${RED}❌ 프로젝트 ID를 설정해주세요.${NC}"
     echo "사용법: ./deploy.sh PROJECT_ID [REGION] [DOCKERHUB_USERNAME] [OPENAI_API_KEY]"
+    echo "또는 secrets.toml에 PROJECT_ID 추가"
     exit 1
 fi
 
@@ -31,6 +71,7 @@ fi
 if [ -z "$DOCKERHUB_USERNAME" ]; then
     echo -e "${RED}❌ Docker Hub 사용자명을 설정해주세요.${NC}"
     echo "사용법: ./deploy.sh PROJECT_ID REGION DOCKERHUB_USERNAME [OPENAI_API_KEY]"
+    echo "또는 secrets.toml에 DOCKERHUB_USERNAME 추가"
     exit 1
 fi
 
@@ -57,21 +98,29 @@ IMAGE_TAG_LATEST="$DOCKERHUB_USERNAME/$IMAGE_NAME:latest"
 echo -e "${YELLOW}🔨 Cloud Build로 이미지 빌드 및 Docker Hub 푸시 중 (amd64 플랫폼)...${NC}"
 
 # Docker Hub Personal Access Token 확인
-# 환경변수에서 먼저 확인
+# 우선순위: 환경변수 > secrets.toml > 사용자 입력
 if [ -z "$DOCKERHUB_TOKEN" ]; then
-    echo -e "${YELLOW}📝 Docker Hub Personal Access Token이 필요합니다.${NC}"
-    echo -e "${YELLOW}   Docker Hub → Account Settings → Security → New Access Token${NC}"
-    echo -e "${YELLOW}   또는 환경변수로 설정: export DOCKERHUB_TOKEN='YOUR_TOKEN'${NC}"
-    read -sp "Docker Hub Personal Access Token을 입력하세요: " DOCKERHUB_TOKEN
-    echo ""
-    
-    if [ -z "$DOCKERHUB_TOKEN" ]; then
-        echo -e "${RED}❌ Docker Hub Token이 필요합니다.${NC}"
-        echo -e "${YELLOW}   환경변수로 설정: export DOCKERHUB_TOKEN='YOUR_TOKEN'${NC}"
-        exit 1
+    # 환경변수 확인
+    if [ -n "${DOCKERHUB_TOKEN_ENV:-}" ]; then
+        DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN_ENV"
+        echo -e "${GREEN}✅ 환경변수에서 Docker Hub Token 사용${NC}"
+    else
+        echo -e "${YELLOW}📝 Docker Hub Personal Access Token이 필요합니다.${NC}"
+        echo -e "${YELLOW}   Docker Hub → Account Settings → Security → New Access Token${NC}"
+        echo -e "${YELLOW}   또는 환경변수로 설정: export DOCKERHUB_TOKEN='YOUR_TOKEN'${NC}"
+        echo -e "${YELLOW}   또는 secrets.toml에 DOCKERHUB_PERSONAL_ACCESS_TOKEN 추가${NC}"
+        read -sp "Docker Hub Personal Access Token을 입력하세요: " DOCKERHUB_TOKEN
+        echo ""
+        
+        if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo -e "${RED}❌ Docker Hub Token이 필요합니다.${NC}"
+            echo -e "${YELLOW}   환경변수로 설정: export DOCKERHUB_TOKEN='YOUR_TOKEN'${NC}"
+            echo -e "${YELLOW}   또는 secrets.toml에 DOCKERHUB_PERSONAL_ACCESS_TOKEN 추가${NC}"
+            exit 1
+        fi
     fi
 else
-    echo -e "${GREEN}✅ 환경변수에서 Docker Hub Token 사용${NC}"
+    echo -e "${GREEN}✅ secrets.toml에서 Docker Hub Token 사용${NC}"
 fi
 
 # Cloud Build 설정 파일 생성
